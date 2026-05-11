@@ -204,7 +204,21 @@ function MusclePill({ muscle }) {
   const color = MUSCLE_COLORS[muscle] || MUTED;
   return <span style={{ background: color + "22", color, border: `1px solid ${color}44`, borderRadius: 20, fontSize: 10, fontWeight: 700, padding: "2px 9px" }}>{muscle}</span>;
 }
+function SvgTooltip({ x, y, lines, color, W }) {
+  const bw = Math.max(80, lines[1].length * 7 + 28), bh = 38;
+  let tx = x - bw / 2, ty = y - bh - 12;
+  tx = Math.max(2, Math.min(tx, W - bw - 2));
+  if (ty < 2) ty = y + 14;
+  return (
+    <g style={{ pointerEvents: "none" }}>
+      <rect x={tx} y={ty} width={bw} height={bh} rx={5} fill={CARD2} stroke={color} strokeWidth={1} opacity={0.97} />
+      <text x={tx + bw / 2} y={ty + 13} textAnchor="middle" fill={MUTED} fontSize={9} fontFamily="inherit">{lines[0]}</text>
+      <text x={tx + bw / 2} y={ty + 28} textAnchor="middle" fill={TEXT} fontSize={11} fontWeight={700} fontFamily="inherit">{lines[1]}</text>
+    </g>
+  );
+}
 function WeightChart({ entries }) {
+  const [hovered, setHovered] = useState(null);
   if (entries.length < 2) return <div style={{ textAlign: "center", color: MUTED, fontSize: 13, padding: "28px 0" }}>Log at least 2 days to see your trend chart.</div>;
   const sorted = [...entries].sort((a, b) => a.date.localeCompare(b.date)).slice(-30);
   const weights = sorted.map(e => e.weight);
@@ -216,19 +230,27 @@ function WeightChart({ entries }) {
   const area = `M${xp(0)},${P.t + iH} ` + sorted.map((e, i) => `L${xp(i)},${yp(e.weight)}`).join(" ") + ` L${xp(sorted.length - 1)},${P.t + iH} Z`;
   const ty = yp(WEIGHT_TARGET);
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", overflow: "visible" }}>
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", overflow: "visible" }} onMouseLeave={() => setHovered(null)}>
       <defs><linearGradient id="wg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={ACCENT} stopOpacity="0.2" /><stop offset="100%" stopColor={ACCENT} stopOpacity="0.01" /></linearGradient></defs>
       {[0, 0.25, 0.5, 0.75, 1].map(f => { const w = minW + f * (maxW - minW), y = yp(w); return <g key={f}><line x1={P.l} y1={y} x2={W - P.r} y2={y} stroke={BORDER} strokeWidth={1} /><text x={P.l - 5} y={y + 4} textAnchor="end" fill={MUTED} fontSize={9}>{Math.round(w)}</text></g>; })}
       <line x1={P.l} y1={ty} x2={W - P.r} y2={ty} stroke={GOLD} strokeWidth={1.5} strokeDasharray="6 4" />
       <text x={W - P.r + 3} y={ty + 4} fill={GOLD} fontSize={9} fontWeight={700}>200</text>
       <path d={area} fill="url(#wg)" />
       <polyline points={pts} fill="none" stroke={ACCENT} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
-      {sorted.map((e, i) => <g key={e.date}><circle cx={xp(i)} cy={yp(e.weight)} r={3} fill={ACCENT} />{(i === 0 || i === sorted.length - 1 || i % 7 === 0) && <text x={xp(i)} y={H - 4} textAnchor="middle" fill={MUTED} fontSize={8}>{dateLabelFromStr(e.date)}</text>}</g>)}
+      {sorted.map((e, i) => (
+        <g key={e.date}>
+          <circle cx={xp(i)} cy={yp(e.weight)} r={hovered?.date === e.date ? 5 : 3} fill={ACCENT} />
+          <circle cx={xp(i)} cy={yp(e.weight)} r={10} fill="transparent" style={{ cursor: "crosshair" }} onMouseEnter={() => setHovered({ x: xp(i), y: yp(e.weight), date: e.date, value: e.weight })} />
+          {(i === 0 || i === sorted.length - 1 || i % 7 === 0) && <text x={xp(i)} y={H - 4} textAnchor="middle" fill={hovered?.date === e.date ? ACCENT : MUTED} fontSize={8}>{dateLabelFromStr(e.date)}</text>}
+        </g>
+      ))}
+      {hovered && <SvgTooltip x={hovered.x} y={hovered.y} lines={[dateLabelFromStr(hovered.date), `${hovered.value} lbs`]} color={ACCENT} W={W} />}
     </svg>
   );
 }
 
-function SparklineChart({ entries, goalValue, color = ACCENT, unit = "" }) {
+function SparklineChart({ entries, goalValue, color = ACCENT, unit = "", xMin, xMax }) {
+  const [hovered, setHovered] = useState(null);
   if (entries.length === 0) {
     return <div style={{ textAlign: "center", color: MUTED, fontSize: 12, padding: "18px 0" }}>No data recorded yet.</div>;
   }
@@ -236,12 +258,17 @@ function SparklineChart({ entries, goalValue, color = ACCENT, unit = "" }) {
   const vals = entries.map(e => e.value);
   const minV = Math.min(...vals, goalValue) - Math.max(...vals) * 0.03;
   const maxV = Math.max(...vals, goalValue) + Math.max(...vals) * 0.03;
-  const xp = i => P.l + (entries.length < 2 ? iW / 2 : (i / (entries.length - 1)) * iW);
+  const toMs = d => new Date(d).getTime();
+  const domainMin = toMs(xMin ?? entries[0].date);
+  const domainMax = toMs(xMax ?? entries[entries.length - 1].date);
+  const domainRange = domainMax - domainMin;
+  const xp = date => P.l + (domainRange === 0 ? iW / 2 : (toMs(date) - domainMin) / domainRange * iW);
   const yp = v => P.t + iH - ((v - minV) / (maxV - minV)) * iH;
   const gy = yp(goalValue);
   const gradId = `sg-${unit.replace(/[^a-z]/gi, "")}`;
+  const fmtVal = v => v >= 1000 ? v.toLocaleString() : (Number.isInteger(v) ? String(v) : v.toFixed(1));
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", overflow: "visible" }}>
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", overflow: "visible" }} onMouseLeave={() => setHovered(null)}>
       <defs>
         <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={color} stopOpacity="0.25" />
@@ -256,18 +283,19 @@ function SparklineChart({ entries, goalValue, color = ACCENT, unit = "" }) {
       <text x={W - P.r + 4} y={gy + 4} fill={GOLD} fontSize={9} fontWeight={700}>{goalValue >= 1000 ? (goalValue / 1000).toFixed(0) + "k" : goalValue}</text>
       {entries.length >= 2 && (
         <>
-          <path d={`M${xp(0)},${P.t + iH} ` + entries.map((e, i) => `L${xp(i)},${yp(e.value)}`).join(" ") + ` L${xp(entries.length - 1)},${P.t + iH} Z`} fill={`url(#${gradId})`} />
-          <polyline points={entries.map((e, i) => `${xp(i)},${yp(e.value)}`).join(" ")} fill="none" stroke={color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+          <path d={`M${xp(entries[0].date)},${P.t + iH} ` + entries.map(e => `L${xp(e.date)},${yp(e.value)}`).join(" ") + ` L${xp(entries[entries.length - 1].date)},${P.t + iH} Z`} fill={`url(#${gradId})`} />
+          <polyline points={entries.map(e => `${xp(e.date)},${yp(e.value)}`).join(" ")} fill="none" stroke={color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
         </>
       )}
-      {entries.map((e, i) => (
+      {entries.map((e) => (
         <g key={e.date}>
-          <circle cx={xp(i)} cy={yp(e.value)} r={3.5} fill={color} />
-          {(entries.length === 1 || i === 0 || i === entries.length - 1) && (
-            <text x={xp(i)} y={H - 2} textAnchor={i === 0 && entries.length > 1 ? "start" : i === entries.length - 1 && entries.length > 1 ? "end" : "middle"} fill={MUTED} fontSize={9}>{dateLabelFromStr(e.date)}</text>
-          )}
+          <circle cx={xp(e.date)} cy={yp(e.value)} r={hovered?.date === e.date ? 5.5 : 3.5} fill={color} />
+          <circle cx={xp(e.date)} cy={yp(e.value)} r={10} fill="transparent" style={{ cursor: "crosshair" }} onMouseEnter={() => setHovered({ x: xp(e.date), y: yp(e.value), date: e.date, value: e.value })} />
         </g>
       ))}
+      <text x={P.l} y={H - 2} textAnchor="start" fill={MUTED} fontSize={9}>{dateLabelFromStr(xMin ?? entries[0].date)}</text>
+      {domainRange > 0 && <text x={W - P.r} y={H - 2} textAnchor="end" fill={MUTED} fontSize={9}>{dateLabelFromStr(xMax ?? entries[entries.length - 1].date)}</text>}
+      {hovered && <SvgTooltip x={hovered.x} y={hovered.y} lines={[dateLabelFromStr(hovered.date), `${fmtVal(hovered.value)} ${unit}`]} color={color} W={W} />}
     </svg>
   );
 }
@@ -398,10 +426,16 @@ function TargetsTab() {
     DB.getHealthMetrics().then(setMetricsHistory);
   }, []);
 
+  const lastUpdated = metricsHistory.length > 0
+    ? dateLabelFromStr(metricsHistory[metricsHistory.length - 1].recorded_at)
+    : null;
+  const xMin = metricsHistory.length > 0 ? metricsHistory[0].recorded_at : null;
+  const xMax = metricsHistory.length > 0 ? metricsHistory[metricsHistory.length - 1].recorded_at : null;
+
   return (
     <>
       <SectionHead>HEALTHSPAN METRICS</SectionHead>
-      <div style={{ fontSize: 13, color: MUTED, lineHeight: 1.7, marginBottom: 16 }}>Numbers that predict long-term health. Last updated May 10, 2026.</div>
+      <div style={{ fontSize: 13, color: MUTED, lineHeight: 1.7, marginBottom: 16 }}>Numbers that predict long-term health.{lastUpdated ? ` Last updated ${lastUpdated}.` : ""}</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 28 }}>
         {HEALTHSPAN_METRICS.map((h, i) => {
           const entries = metricsHistory
@@ -418,7 +452,7 @@ function TargetsTab() {
               </div>
               <div style={{ fontSize: 12, color: MUTED, lineHeight: 1.65, marginBottom: 14 }}>{h.note}</div>
               <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 12, overflowX: "auto" }}>
-                <SparklineChart entries={entries} goalValue={h.goalValue} color={h.color} unit={h.unit} />
+                <SparklineChart entries={entries} goalValue={h.goalValue} color={h.color} unit={h.unit} xMin={xMin} xMax={xMax} />
               </div>
             </Card>
           );
