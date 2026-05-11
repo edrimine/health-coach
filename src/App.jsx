@@ -33,7 +33,7 @@ const DB = {
   async getHealthMetrics() {
     const { data } = await supabase
       .from("health_metrics")
-      .select("recorded_at, vo2_max, resting_hr, hrv_ms, avg_daily_steps, weight_lbs")
+      .select("recorded_at, vo2_max, resting_hr, hrv_ms, total_daily_steps, weight_lbs")
       .order("recorded_at", { ascending: true });
     return data || [];
   },
@@ -157,7 +157,7 @@ const HEALTHSPAN_METRICS = [
   { metric: "VO₂ Max", current: "35.8", unit: "mL/min·kg", goal: "38+", note: "Up from 33.7 in April — the running is working. Keep 2x/week and expect continued gains over 2–3 months.", dbField: "vo2_max", goalValue: 38, color: ACCENT },
   { metric: "Resting HR", current: "65", unit: "BPM", goal: "<60", note: "Holding steady. Will trend down as aerobic base builds.", dbField: "resting_hr", goalValue: 60, color: BLUE },
   { metric: "HRV", current: "54", unit: "ms", goal: "55+", note: "Nearly at goal. Watch for drops after poor sleep or high-stress weeks.", dbField: "hrv_ms", goalValue: 55, color: PURPLE },
-  { metric: "Daily Steps", current: "~7,600", unit: "avg/week", goal: "8,000+", note: "Just under target. Small habit changes close the gap.", dbField: "avg_daily_steps", goalValue: 8000, color: PINK },
+  { metric: "Daily Steps", current: "~7,600", unit: "avg/week", goal: "8,000+", note: "Just under target. Small habit changes close the gap.", dbField: "total_daily_steps", goalValue: 8000, color: PINK },
   { metric: "Weight", current: "215.3", unit: "lbs", goal: "200", note: "15.3 lbs to goal. Log daily for best trend picture — normal daily variation is 1–3 lbs.", dbField: "weight_lbs", goalValue: 200, color: GOLD },
 ];
 
