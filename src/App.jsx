@@ -29,6 +29,14 @@ const DB = {
   async upsertWeight(date, weightLbs) {
     await supabase.from("weight_entries").upsert({ entry_date: date, weight_lbs: weightLbs }, { onConflict: "entry_date" });
   },
+  // Health metrics history
+  async getHealthMetrics() {
+    const { data } = await supabase
+      .from("health_metrics")
+      .select("recorded_at, vo2_max, resting_hr, hrv_ms, avg_daily_steps, weight_lbs")
+      .order("recorded_at", { ascending: true });
+    return data || [];
+  },
   // Workout last-done (stored in weekly_logs notes field as a JSON aside — simplest approach)
   async getLastWorkout() {
     const { data } = await supabase.from("weekly_logs").select("notes").eq("week_key", "__workout_meta__").single();
@@ -146,11 +154,11 @@ const PLAN_DIET = [
 ];
 
 const HEALTHSPAN_METRICS = [
-  { metric: "VO₂ Max", current: "35.8", unit: "mL/min·kg", goal: "38+", note: "Up from 33.7 in April — the running is working. Keep 2x/week and expect continued gains over 2–3 months." },
-  { metric: "Resting HR", current: "65", unit: "BPM", goal: "<60", note: "Holding steady. Will trend down as aerobic base builds." },
-  { metric: "HRV", current: "54", unit: "ms", goal: "55+", note: "Nearly at goal. Watch for drops after poor sleep or high-stress weeks." },
-  { metric: "Daily Steps", current: "~7,600", unit: "avg/week", goal: "8,000+", note: "Just under target. Small habit changes close the gap." },
-  { metric: "Weight", current: "215.3", unit: "lbs", goal: "200", note: "15.3 lbs to goal. Log daily for best trend picture — normal daily variation is 1–3 lbs." },
+  { metric: "VO₂ Max", current: "35.8", unit: "mL/min·kg", goal: "38+", note: "Up from 33.7 in April — the running is working. Keep 2x/week and expect continued gains over 2–3 months.", dbField: "vo2_max", goalValue: 38, color: ACCENT },
+  { metric: "Resting HR", current: "65", unit: "BPM", goal: "<60", note: "Holding steady. Will trend down as aerobic base builds.", dbField: "resting_hr", goalValue: 60, color: BLUE },
+  { metric: "HRV", current: "54", unit: "ms", goal: "55+", note: "Nearly at goal. Watch for drops after poor sleep or high-stress weeks.", dbField: "hrv_ms", goalValue: 55, color: PURPLE },
+  { metric: "Daily Steps", current: "~7,600", unit: "avg/week", goal: "8,000+", note: "Just under target. Small habit changes close the gap.", dbField: "avg_daily_steps", goalValue: 8000, color: PINK },
+  { metric: "Weight", current: "215.3", unit: "lbs", goal: "200", note: "15.3 lbs to goal. Log daily for best trend picture — normal daily variation is 1–3 lbs.", dbField: "weight_lbs", goalValue: 200, color: GOLD },
 ];
 
 // ── UI primitives ──────────────────────────────────────────────────────────
@@ -216,6 +224,50 @@ function WeightChart({ entries }) {
       <path d={area} fill="url(#wg)" />
       <polyline points={pts} fill="none" stroke={ACCENT} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
       {sorted.map((e, i) => <g key={e.date}><circle cx={xp(i)} cy={yp(e.weight)} r={3} fill={ACCENT} />{(i === 0 || i === sorted.length - 1 || i % 7 === 0) && <text x={xp(i)} y={H - 4} textAnchor="middle" fill={MUTED} fontSize={8}>{dateLabelFromStr(e.date)}</text>}</g>)}
+    </svg>
+  );
+}
+
+function SparklineChart({ entries, goalValue, color = ACCENT, unit = "" }) {
+  if (entries.length === 0) {
+    return <div style={{ textAlign: "center", color: MUTED, fontSize: 12, padding: "18px 0" }}>No data recorded yet.</div>;
+  }
+  const W = 540, H = 110, P = { t: 10, r: 30, b: 24, l: 40 }, iW = W - P.l - P.r, iH = H - P.t - P.b;
+  const vals = entries.map(e => e.value);
+  const minV = Math.min(...vals, goalValue) - Math.max(...vals) * 0.03;
+  const maxV = Math.max(...vals, goalValue) + Math.max(...vals) * 0.03;
+  const xp = i => P.l + (entries.length < 2 ? iW / 2 : (i / (entries.length - 1)) * iW);
+  const yp = v => P.t + iH - ((v - minV) / (maxV - minV)) * iH;
+  const gy = yp(goalValue);
+  const gradId = `sg-${unit.replace(/[^a-z]/gi, "")}`;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", overflow: "visible" }}>
+      <defs>
+        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity="0.25" />
+          <stop offset="100%" stopColor={color} stopOpacity="0.02" />
+        </linearGradient>
+      </defs>
+      {[0, 0.5, 1].map(f => {
+        const v = minV + f * (maxV - minV), y = yp(v);
+        return <g key={f}><line x1={P.l} y1={y} x2={W - P.r} y2={y} stroke={BORDER} strokeWidth={1} /><text x={P.l - 5} y={y + 4} textAnchor="end" fill={MUTED} fontSize={9}>{Number.isInteger(v) ? Math.round(v) : v.toFixed(1)}</text></g>;
+      })}
+      <line x1={P.l} y1={gy} x2={W - P.r} y2={gy} stroke={GOLD} strokeWidth={1.5} strokeDasharray="5 4" />
+      <text x={W - P.r + 4} y={gy + 4} fill={GOLD} fontSize={9} fontWeight={700}>{goalValue >= 1000 ? (goalValue / 1000).toFixed(0) + "k" : goalValue}</text>
+      {entries.length >= 2 && (
+        <>
+          <path d={`M${xp(0)},${P.t + iH} ` + entries.map((e, i) => `L${xp(i)},${yp(e.value)}`).join(" ") + ` L${xp(entries.length - 1)},${P.t + iH} Z`} fill={`url(#${gradId})`} />
+          <polyline points={entries.map((e, i) => `${xp(i)},${yp(e.value)}`).join(" ")} fill="none" stroke={color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+        </>
+      )}
+      {entries.map((e, i) => (
+        <g key={e.date}>
+          <circle cx={xp(i)} cy={yp(e.value)} r={3.5} fill={color} />
+          {(entries.length === 1 || i === 0 || i === entries.length - 1) && (
+            <text x={xp(i)} y={H - 2} textAnchor={i === 0 && entries.length > 1 ? "start" : i === entries.length - 1 && entries.length > 1 ? "end" : "middle"} fill={MUTED} fontSize={9}>{dateLabelFromStr(e.date)}</text>
+          )}
+        </g>
+      ))}
     </svg>
   );
 }
@@ -335,6 +387,53 @@ function WorkoutsTab() {
         </Card>
       </div>
     </div>
+  );
+}
+
+// ── Targets Tab ────────────────────────────────────────────────────────────
+function TargetsTab() {
+  const [metricsHistory, setMetricsHistory] = useState([]);
+
+  useEffect(() => {
+    DB.getHealthMetrics().then(setMetricsHistory);
+  }, []);
+
+  return (
+    <>
+      <SectionHead>HEALTHSPAN METRICS</SectionHead>
+      <div style={{ fontSize: 13, color: MUTED, lineHeight: 1.7, marginBottom: 16 }}>Numbers that predict long-term health. Last updated May 10, 2026.</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 28 }}>
+        {HEALTHSPAN_METRICS.map((h, i) => {
+          const entries = metricsHistory
+            .filter(r => r[h.dbField] != null)
+            .map(r => ({ date: r.recorded_at, value: parseFloat(r[h.dbField]) }));
+          return (
+            <Card key={i}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                <div style={{ fontWeight: 700, fontSize: 15 }}>{h.metric}</div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 10, color: MUTED, marginBottom: 2 }}>NOW → GOAL</div>
+                  <div style={{ fontSize: 14, fontWeight: 800 }}><span style={{ color: DANGER }}>{h.current}</span><span style={{ color: MUTED, margin: "0 6px" }}>→</span><span style={{ color: ACCENT }}>{h.goal}</span><span style={{ color: MUTED, fontSize: 11, marginLeft: 4 }}>{h.unit}</span></div>
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: MUTED, lineHeight: 1.65, marginBottom: 14 }}>{h.note}</div>
+              <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 12, overflowX: "auto" }}>
+                <SparklineChart entries={entries} goalValue={h.goalValue} color={h.color} unit={h.unit} />
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+      <SectionHead>THE BIG PICTURE</SectionHead>
+      <Card>
+        {[["Cardio fitness (VO₂ max)", "is the single strongest predictor of all-cause mortality. Yours jumped from 33.7 → 35.8 this month — the runs are working."], ["Muscle mass", "matters more after 40 than most people realize. Even 1x/week strength work maintains it. The A/B/C rotation is designed to be sustainable."], ["Consistent movement", "— not heroic workouts — is what accumulates over decades. 3 solid days/week for 10 years beats 6 months of intensity followed by burnout."], ["Sleep", "is the silent lever. Weight, HRV, energy, food choices — everything degrades with poor sleep. Non-negotiable with three kids."]].map(([title, body], i, arr) => (
+          <div key={i} style={{ display: "flex", gap: 12, marginBottom: i < arr.length - 1 ? 16 : 0 }}>
+            <div style={{ color: ACCENT, fontWeight: 800, marginTop: 1, flexShrink: 0 }}>→</div>
+            <div style={{ fontSize: 13, color: "#94a3b8", lineHeight: 1.75 }}><span style={{ color: TEXT, fontWeight: 700 }}>{title} </span>{body}</div>
+          </div>
+        ))}
+      </Card>
+    </>
   );
 }
 
@@ -564,33 +663,7 @@ export default function HealthCoach() {
           </div>
         </>}
 
-        {tab === "targets" && <>
-          <SectionHead>HEALTHSPAN METRICS</SectionHead>
-          <div style={{ fontSize: 13, color: MUTED, lineHeight: 1.7, marginBottom: 16 }}>Numbers that predict long-term health. Last updated May 10, 2026.</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 28 }}>
-            {HEALTHSPAN_METRICS.map((h, i) => (
-              <Card key={i}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
-                  <div style={{ fontWeight: 700, fontSize: 15 }}>{h.metric}</div>
-                  <div style={{ textAlign: "right" }}>
-                    <div style={{ fontSize: 10, color: MUTED, marginBottom: 2 }}>NOW → GOAL</div>
-                    <div style={{ fontSize: 14, fontWeight: 800 }}><span style={{ color: DANGER }}>{h.current}</span><span style={{ color: MUTED, margin: "0 6px" }}>→</span><span style={{ color: ACCENT }}>{h.goal}</span><span style={{ color: MUTED, fontSize: 11, marginLeft: 4 }}>{h.unit}</span></div>
-                  </div>
-                </div>
-                <div style={{ fontSize: 12, color: MUTED, lineHeight: 1.65 }}>{h.note}</div>
-              </Card>
-            ))}
-          </div>
-          <SectionHead>THE BIG PICTURE</SectionHead>
-          <Card>
-            {[["Cardio fitness (VO₂ max)", "is the single strongest predictor of all-cause mortality. Yours jumped from 33.7 → 35.8 this month — the runs are working."], ["Muscle mass", "matters more after 40 than most people realize. Even 1x/week strength work maintains it. The A/B/C rotation is designed to be sustainable."], ["Consistent movement", "— not heroic workouts — is what accumulates over decades. 3 solid days/week for 10 years beats 6 months of intensity followed by burnout."], ["Sleep", "is the silent lever. Weight, HRV, energy, food choices — everything degrades with poor sleep. Non-negotiable with three kids."]].map(([title, body], i, arr) => (
-              <div key={i} style={{ display: "flex", gap: 12, marginBottom: i < arr.length - 1 ? 16 : 0 }}>
-                <div style={{ color: ACCENT, fontWeight: 800, marginTop: 1, flexShrink: 0 }}>→</div>
-                <div style={{ fontSize: 13, color: "#94a3b8", lineHeight: 1.75 }}><span style={{ color: TEXT, fontWeight: 700 }}>{title} </span>{body}</div>
-              </div>
-            ))}
-          </Card>
-        </>}
+        {tab === "targets" && <TargetsTab />}
 
       </div>
     </div>
