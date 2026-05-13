@@ -37,13 +37,23 @@ const DB = {
       .order("recorded_at", { ascending: true });
     return data || [];
   },
-  // Workout last-done (stored in weekly_logs notes field as a JSON aside — simplest approach)
-  async getLastWorkout() {
-    const { data } = await supabase.from("weekly_logs").select("notes").eq("week_key", "__workout_meta__").single();
-    try { return data ? JSON.parse(data.notes) : {}; } catch { return {}; }
+  // Workout log
+  async logStrength(workoutId) {
+    const { data } = await supabase.from("workout_log").insert({ type: "strength", workout_id: workoutId }).select("id, logged_at, type, workout_id").single();
+    return data;
   },
-  async setLastWorkout(obj) {
-    await supabase.from("weekly_logs").upsert({ week_key: "__workout_meta__", cardio: 0, strength: 0, steps: 0, notes: JSON.stringify(obj) }, { onConflict: "week_key" });
+  async logRun(distanceMi, durationMin) {
+    const { data } = await supabase.from("workout_log").insert({ type: "run", distance_mi: distanceMi, duration_min: durationMin }).select("id, logged_at, type, distance_mi, duration_min").single();
+    return data;
+  },
+  async getWorkoutLogSince(dateStr) {
+    const { data } = await supabase.from("workout_log").select("id, logged_at, type, workout_id, distance_mi, duration_min").gte("logged_at", dateStr).order("logged_at", { ascending: false });
+    return data || [];
+  },
+  async getLastStrengthPerWorkout() {
+    const { data } = await supabase.from("workout_log").select("workout_id, logged_at").eq("type", "strength").order("logged_at", { ascending: false });
+    if (!data) return {};
+    return data.reduce((acc, row) => { if (!acc[row.workout_id]) acc[row.workout_id] = row.logged_at; return acc; }, {});
   },
 };
 
@@ -300,29 +310,62 @@ function SparklineChart({ entries, goalValue, color = ACCENT, unit = "", xMin, x
   );
 }
 
+// ── Run Log Form ────────────────────────────────────────────────────────────
+function RunLogForm({ onRunLogged }) {
+  const [dist, setDist] = useState("");
+  const [dur, setDur] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function handleLog() {
+    const d = parseFloat(dist), m = parseInt(dur, 10);
+    if (!d || d <= 0 || !m || m <= 0) return;
+    setSaving(true);
+    const row = await DB.logRun(d, m);
+    onRunLogged(row);
+    setDist(""); setDur("");
+    setSaving(false);
+  }
+
+  return (
+    <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "14px 16px", marginBottom: 20 }}>
+      <SectionHead>LOG A RUN</SectionHead>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <input type="number" step="0.1" min="0.1" value={dist} onChange={e => setDist(e.target.value)}
+          placeholder="Miles" style={{ width: 90, background: CARD2, border: `1px solid ${BORDER}`, borderRadius: 8, color: TEXT, fontFamily: "inherit", fontSize: 15, fontWeight: 700, padding: "10px 12px", outline: "none" }} />
+        <span style={{ color: MUTED, fontSize: 13 }}>mi</span>
+        <input type="number" min="1" value={dur} onChange={e => setDur(e.target.value)}
+          placeholder="Minutes" style={{ width: 100, background: CARD2, border: `1px solid ${BORDER}`, borderRadius: 8, color: TEXT, fontFamily: "inherit", fontSize: 15, fontWeight: 700, padding: "10px 12px", outline: "none" }} />
+        <span style={{ color: MUTED, fontSize: 13 }}>min</span>
+        <button onClick={handleLog} disabled={saving}
+          style={{ background: PINK, color: "#0f1117", border: "none", borderRadius: 8, padding: "10px 16px", fontFamily: "inherit", fontSize: 13, fontWeight: 800, cursor: "pointer" }}>
+          {saving ? "…" : "LOG RUN"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Workouts Tab ───────────────────────────────────────────────────────────
-function WorkoutsTab() {
+function WorkoutsTab({ lastStrength, setLastStrength, onWorkoutLogged, onRunLogged }) {
   const [activeWorkout, setActiveWorkout] = useState("A");
   const [expandedEx, setExpandedEx] = useState(null);
-  const [lastDone, setLastDone] = useState({});
-
-  useEffect(() => {
-    DB.getLastWorkout().then(data => setLastDone(data || {}));
-  }, []);
 
   const workout = WORKOUTS.find(w => w.id === activeWorkout);
 
   async function markDone(id) {
-    const updated = { ...lastDone, [id]: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" }) };
-    setLastDone(updated);
-    await DB.setLastWorkout(updated);
+    const row = await DB.logStrength(id);
+    setLastStrength(prev => ({ ...prev, [id]: row.logged_at }));
+    onWorkoutLogged(row);
   }
 
   const nextSuggestion = (() => {
     const order = ["A", "B", "C"];
-    const done = order.filter(id => lastDone[id]);
-    if (!done.length) return "A";
-    return order[(order.indexOf(done[done.length - 1]) + 1) % 3];
+    const withDates = order
+      .filter(id => lastStrength[id])
+      .map(id => ({ id, at: new Date(lastStrength[id]) }))
+      .sort((a, b) => b.at - a.at);
+    if (!withDates.length) return "A";
+    return order[(order.indexOf(withDates[0].id) + 1) % 3];
   })();
 
   return (
@@ -335,7 +378,7 @@ function WorkoutsTab() {
           <div key={w.id} onClick={() => setActiveWorkout(w.id)} style={{ background: activeWorkout === w.id ? w.color + "22" : CARD, border: `2px solid ${activeWorkout === w.id ? w.color : BORDER}`, borderRadius: 12, padding: "14px 10px", textAlign: "center", cursor: "pointer", transition: "all 0.2s" }}>
             <div style={{ fontSize: 22, fontWeight: 900, color: w.color, marginBottom: 4 }}>{w.id}</div>
             <div style={{ fontSize: 11, fontWeight: 700, color: activeWorkout === w.id ? w.color : MUTED }}>{w.subtitle}</div>
-            {lastDone[w.id] && <div style={{ fontSize: 10, color: MUTED, marginTop: 4 }}>Last: {lastDone[w.id]}</div>}
+            {lastStrength[w.id] && <div style={{ fontSize: 10, color: MUTED, marginTop: 4 }}>Last: {dateLabelFromStr(lastStrength[w.id])}</div>}
           </div>
         ))}
       </div>
@@ -352,6 +395,7 @@ function WorkoutsTab() {
         </div>
         <button onClick={() => markDone(workout.id)} style={{ marginTop: 12, background: workout.color, color: "#0f1117", border: "none", borderRadius: 7, padding: "8px 16px", fontFamily: "inherit", fontSize: 12, fontWeight: 800, cursor: "pointer", letterSpacing: "0.04em" }}>✓ Mark as Done Today</button>
       </div>
+      <RunLogForm onRunLogged={onRunLogged} />
       <SectionHead>EXERCISES — {workout.exercises.length} MOVEMENTS</SectionHead>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {workout.exercises.map((ex, i) => {
@@ -477,6 +521,8 @@ export default function HealthCoach() {
   const [loading, setLoading] = useState(true);
   const [currentWeek, setCurrentWeek] = useState(defaultWeek());
   const [weekHistory, setWeekHistory] = useState([]);
+  const [workoutLog, setWorkoutLog] = useState([]);
+  const [lastStrength, setLastStrength] = useState({});
   const [weightEntries, setWeightEntries] = useState([]);
   const [weightInput, setWeightInput] = useState("");
   const [expanded, setExpanded] = useState(null);
@@ -504,6 +550,12 @@ export default function HealthCoach() {
         // Weight entries
         const weights = await DB.getWeights();
         setWeightEntries(weights.map(r => ({ date: r.entry_date, weight: parseFloat(r.weight_lbs) })));
+
+        // Workout log
+        const wLog = await DB.getWorkoutLogSince(CW_KEY);
+        setWorkoutLog(wLog);
+        const lastS = await DB.getLastStrengthPerWorkout();
+        setLastStrength(lastS);
       } catch (e) {
         console.error("Load error:", e);
       }
@@ -518,21 +570,19 @@ export default function HealthCoach() {
     if (saveTimer) clearTimeout(saveTimer);
     const t = setTimeout(() => {
       DB.upsertWeek(CW_KEY, {
-        cardio: currentWeek.cardio,
-        strength: currentWeek.strength,
         steps: currentWeek.steps,
         notes: currentWeek.notes,
       });
     }, 800);
     setSaveTimer(t);
-  }, [currentWeek, loading]);
+  }, [currentWeek.steps, currentWeek.notes, loading]);
 
   function bump(field, delta) {
     setCurrentWeek(w => ({ ...w, [field]: Math.max(0, Math.min(w[field] + delta, WEEK_TARGETS[field])) }));
   }
 
   async function archiveWeek() {
-    const saved = { cardio: currentWeek.cardio, strength: currentWeek.strength, steps: currentWeek.steps, notes: currentWeek.notes, saved_at: new Date().toISOString() };
+    const saved = { cardio: weeklyCardio, strength: weeklyStrength, steps: currentWeek.steps, notes: currentWeek.notes, saved_at: new Date().toISOString() };
     await DB.upsertWeek(CW_KEY, saved);
     setWeekHistory(h => [{ week_key: CW_KEY, ...saved }, ...h.filter(x => x.week_key !== CW_KEY)]);
     setCurrentWeek(defaultWeek());
@@ -549,8 +599,10 @@ export default function HealthCoach() {
     flash("✓ Weight logged");
   }
 
-  const cP = currentWeek.cardio / WEEK_TARGETS.cardio;
-  const sP = currentWeek.strength / WEEK_TARGETS.strength;
+  const weeklyCardio   = workoutLog.filter(r => r.type === "run").length;
+  const weeklyStrength = workoutLog.filter(r => r.type === "strength").length;
+  const cP  = weeklyCardio  / WEEK_TARGETS.cardio;
+  const sP  = weeklyStrength / WEEK_TARGETS.strength;
   const stP = currentWeek.steps / WEEK_TARGETS.steps;
   const weekScore = Math.round(((cP + sP + stP) / 3) * 100);
   const latestWeight = weightEntries.length > 0 ? weightEntries[weightEntries.length - 1].weight : 215.3;
@@ -596,10 +648,13 @@ export default function HealthCoach() {
         {tab === "tracker" && <>
           <SectionHead>THIS WEEK — {weekLabel(CW_KEY).toUpperCase()}</SectionHead>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 24 }}>
-            {[{ label: "Cardio", f: "cardio", emoji: "🏃", pct: cP, val: currentWeek.cardio, color: PINK }, { label: "Strength", f: "strength", emoji: "💪", pct: sP, val: currentWeek.strength, color: PURPLE }, { label: "8k+ Days", f: "steps", emoji: "🚶", pct: stP, val: currentWeek.steps, color: BLUE }].map(c => (
+            {[{ label: "Cardio", f: "cardio", emoji: "🏃", pct: cP, val: weeklyCardio, color: PINK }, { label: "Strength", f: "strength", emoji: "💪", pct: sP, val: weeklyStrength, color: PURPLE }, { label: "8k+ Days", f: "steps", emoji: "🚶", pct: stP, val: currentWeek.steps, color: BLUE }].map(c => (
               <Card key={c.f} style={{ textAlign: "center", padding: "16px 10px" }}>
                 <Ring pct={c.pct} color={c.color} label={`${c.val}/${WEEK_TARGETS[c.f]}`} sublabel={`${c.emoji} ${c.label}`} />
-                <Counter value={c.val} max={WEEK_TARGETS[c.f]} onUp={() => bump(c.f, 1)} onDown={() => bump(c.f, -1)} />
+                {c.f === "steps"
+                  ? <Counter value={c.val} max={WEEK_TARGETS[c.f]} onUp={() => bump(c.f, 1)} onDown={() => bump(c.f, -1)} />
+                  : <div style={{ fontSize: 11, color: MUTED, marginTop: 8 }}>auto-logged</div>
+                }
               </Card>
             ))}
           </div>
@@ -639,7 +694,14 @@ export default function HealthCoach() {
           ))}</Card>
         </>}
 
-        {tab === "workouts" && <WorkoutsTab />}
+        {tab === "workouts" && (
+          <WorkoutsTab
+            lastStrength={lastStrength}
+            setLastStrength={setLastStrength}
+            onWorkoutLogged={row => setWorkoutLog(prev => [row, ...prev])}
+            onRunLogged={row => setWorkoutLog(prev => [row, ...prev])}
+          />
+        )}
 
         {tab === "history" && <>
           <SectionHead>ARCHIVED WEEKS</SectionHead>
